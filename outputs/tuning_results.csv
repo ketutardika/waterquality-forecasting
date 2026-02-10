@@ -1,0 +1,2 @@
+trial,epochs,lr,units_1,units_2,val_loss,actual_ep
+1,10,0.001,64,32,0.019373653456568718,10

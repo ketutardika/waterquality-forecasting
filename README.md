@@ -2,8 +2,6 @@
 
 Predicting water pH levels in aquaponic lettuce cultivation systems using deep learning. This project compares three recurrent neural network architectures — LSTM, GRU, and a proposed Hybrid LSTM-GRU model — to determine the most effective approach for time-series pH forecasting.
 
-> **Thesis Project** — Magister Data Science, Institut Teknologi dan Bisnis STIKOM Bali
-
 ## Model Architectures
 
 All three models share the same input shape `(12 timesteps, 3 features)` and predict a single pH value.

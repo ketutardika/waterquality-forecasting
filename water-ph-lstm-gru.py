@@ -1,42 +1,19 @@
-# =============================================================================
-# TESIS: Prediksi pH Sistem Akuaponik Menggunakan Model Hybrid LSTM-GRU
-# Author  : Ardi
-# Program : Magister Data Science - Institut Teknologi dan Bisnis STIKOM Bali
-# Python  : 3.12 | TensorFlow/Keras | Spyder 6.1.2
-# =============================================================================
-# STRUKTUR FILE:
-#   1. Import & Konfigurasi Global
-#   2. Fungsi Preprocessing Data
-#   3. Fungsi Feature Engineering
-#   4. Fungsi Pembangunan Model (LSTM, GRU, Hybrid LSTM-GRU)
-#   5. Fungsi Training & Hyperparameter Tuning
-#   6. Fungsi Evaluasi & Metrik
-#   7. Fungsi Visualisasi
-#   8. Main Pipeline (Eksekusi Utama)
-# =============================================================================
-
-# =============================================================================
-# BAGIAN 1: IMPORT & KONFIGURASI GLOBAL
-# =============================================================================
-
 import os
 import warnings
 import numpy as np
 import pandas as pd
 import matplotlib
-matplotlib.use('Agg')   # Untuk Spyder: ganti ke 'Qt5Agg' jika ingin inline
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import seaborn as sns
 from pathlib import Path
 from datetime import datetime
 
-# Scikit-learn
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
-# TensorFlow / Keras
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'   # Suppress TF info logs
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import tensorflow as tf
 from tensorflow.keras.models import Model, Sequential
 from tensorflow.keras.layers import (
@@ -52,17 +29,11 @@ from tensorflow.keras.regularizers import l2
 
 warnings.filterwarnings('ignore')
 
-# -------------------------------------------------------------------
-# SEED – Reproducibility
-# -------------------------------------------------------------------
 SEED = 42
 np.random.seed(SEED)
 tf.random.set_seed(SEED)
 
-# -------------------------------------------------------------------
-# PATH KONFIGURASI
-# -------------------------------------------------------------------
-BASE_DIR    = Path(__file__).parent          # folder yang sama dengan script
+BASE_DIR    = Path(__file__).parent
 DATA_PATH   = BASE_DIR / "sources" / "aquaponic_letuce_dataset_.csv"
 OUTPUT_DIR  = BASE_DIR / "outputs"
 MODEL_DIR   = OUTPUT_DIR / "models"
@@ -72,21 +43,15 @@ LOG_DIR     = OUTPUT_DIR / "logs"
 for d in [OUTPUT_DIR, MODEL_DIR, PLOT_DIR, LOG_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
-# -------------------------------------------------------------------
-# HYPERPARAMETER GLOBAL (sesuai proposal BAB IV)
-# -------------------------------------------------------------------
 CFG = {
-    # Data
     "target_col"    : "water_pH",
     "feature_cols"  : ["water_pH", "TDS", "water_temp"],
-    "test_size"     : 0.20,          # 80-20 split
-    "val_size"      : 0.10,          # 10% dari train untuk validasi
+    "test_size"     : 0.20,
+    "val_size"      : 0.10,
 
-    # Sliding window
-    "timesteps"     : 12,            # panjang jendela waktu (lag)
-    "n_features"    : 3,             # pH, TDS, suhu
+    "timesteps"     : 12,
+    "n_features"    : 3,
 
-    # Arsitektur model
     "lstm_units_1"  : 64,
     "lstm_units_2"  : 32,
     "gru_units_1"   : 64,
@@ -94,21 +59,16 @@ CFG = {
     "dense_units"   : 16,
     "dropout_rate"  : 0.2,
 
-    # Training
     "batch_size"    : 64,
-    "patience"      : 15,            # EarlyStopping
+    "patience"      : 15,
     "reduce_lr_pat" : 7,
 
-    # Hyperparameter Tuning Skenario (BAB IV.4)
-    # -- SET 1 PERCOBAAN DULU UNTUK TESTING --
     "epoch_variants"  : [10],
     "lr_variants"     : [0.001],
     "unit_variants"   : [(64, 32)],
 
-    # Smoothing
     "ma_window"     : 3,
 
-    # Grafik
     "fig_dpi"       : 150,
 }
 
@@ -118,15 +78,7 @@ print("  TensorFlow version :", tf.__version__)
 print("=" * 65)
 
 
-# =============================================================================
-# BAGIAN 2: FUNGSI PREPROCESSING DATA
-# =============================================================================
-
 def load_and_inspect(path: Path) -> pd.DataFrame:
-    """
-    Memuat CSV, auto-detect kolom timestamp, dan cetak ringkasan awal.
-    Sesuai BAB IV.3.1 - Persiapan Data.
-    """
     print("\n[1/8] MEMUAT DATASET ...")
     if not path.exists():
         raise FileNotFoundError(
@@ -138,7 +90,6 @@ def load_and_inspect(path: Path) -> pd.DataFrame:
     print(f"      Ukuran dataset awal  : {df.shape[0]:,} baris x {df.shape[1]} kolom")
     print(f"      Kolom               : {list(df.columns)}")
 
-    # --- Auto-detect & parse kolom timestamp ---
     ts_candidates = [c for c in df.columns
                      if any(k in c.lower() for k in ["time", "date", "stamp", "ts"])]
     if ts_candidates:
@@ -150,7 +101,6 @@ def load_and_inspect(path: Path) -> pd.DataFrame:
     else:
         print("      [PERINGATAN] Kolom timestamp tidak ditemukan. Menggunakan indeks integer.")
 
-    # --- Auto-rename kolom ke nama standar jika berbeda ---
     rename_map = {}
     for col in df.columns:
         cl = col.lower().replace(" ", "_")
@@ -165,7 +115,6 @@ def load_and_inspect(path: Path) -> pd.DataFrame:
 
 
 def descriptive_stats(df: pd.DataFrame) -> pd.DataFrame:
-    """Statistik deskriptif untuk EDA."""
     stats = df[CFG["feature_cols"]].describe().T
     stats["skewness"] = df[CFG["feature_cols"]].skew()
     stats["kurtosis"] = df[CFG["feature_cols"]].kurt()
@@ -175,12 +124,6 @@ def descriptive_stats(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Penanganan nilai hilang:
-    - Interpolasi linier (BAB IV.3.2.1)
-    - Forward fill untuk sisa NaN
-    Sesuai persamaan interpolasi linier di BAB III.4.1.
-    """
     missing_before = df[CFG["feature_cols"]].isnull().sum()
     if missing_before.sum() > 0:
         print(f"\n      Missing values sebelum: {missing_before.to_dict()}")
@@ -198,22 +141,18 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def remove_outliers_iqr(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Deteksi dan penanganan outlier menggunakan metode IQR.
-    Sesuai BAB IV.3.2 - Outlier Detection.
-    """
     df_clean = df.copy()
     total_removed = 0
     for col in CFG["feature_cols"]:
         Q1  = df_clean[col].quantile(0.25)
         Q3  = df_clean[col].quantile(0.75)
         IQR = Q3 - Q1
-        lower = Q1 - 3.0 * IQR    # batas longgar agar data sensor tidak terlalu banyak dibuang
+        lower = Q1 - 3.0 * IQR
         upper = Q3 + 3.0 * IQR
         mask  = (df_clean[col] < lower) | (df_clean[col] > upper)
         n_out = mask.sum()
         if n_out > 0:
-            df_clean.loc[mask, col] = np.nan   # ganti dulu jadi NaN
+            df_clean.loc[mask, col] = np.nan
             total_removed += n_out
     if total_removed:
         print(f"      Outlier ditemukan    : {total_removed:,} titik → diisi interpolasi")
@@ -224,7 +163,6 @@ def remove_outliers_iqr(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def remove_duplicates(df: pd.DataFrame) -> pd.DataFrame:
-    """Hapus duplikat (BAB IV.3.1 - Duplicate Removal)."""
     n_dup = df.duplicated().sum()
     if n_dup:
         df = df[~df.duplicated()]
@@ -233,10 +171,6 @@ def remove_duplicates(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def apply_moving_average(df: pd.DataFrame, window: int = 3) -> pd.DataFrame:
-    """
-    Smoothing dengan moving average untuk meredam noise sensor.
-    Sesuai BAB IV.3.2.2 & persamaan MA(t).
-    """
     for col in CFG["feature_cols"]:
         df[col] = (df[col]
                    .rolling(window=window, min_periods=1, center=True)
@@ -246,11 +180,6 @@ def apply_moving_average(df: pd.DataFrame, window: int = 3) -> pd.DataFrame:
 
 
 def normalize_features(df: pd.DataFrame):
-    """
-    Min-Max Normalization ke [0, 1].
-    Sesuai BAB III.4.2 & BAB IV.3.2.3.
-    Mengembalikan (df_scaled, scaler_dict).
-    """
     scalers = {}
     df_scaled = df.copy()
     for col in CFG["feature_cols"]:
@@ -262,10 +191,6 @@ def normalize_features(df: pd.DataFrame):
 
 
 def full_preprocessing(path: Path):
-    """
-    Pipeline preprocessing lengkap — memanggil semua langkah berurutan.
-    Mengembalikan (df_raw, df_processed, scalers).
-    """
     print("\n" + "=" * 65)
     print("  TAHAP PREPROCESSING DATA  (BAB IV.3)")
     print("=" * 65)
@@ -282,15 +207,7 @@ def full_preprocessing(path: Path):
     return df_raw, df_scaled, scalers, stats
 
 
-# =============================================================================
-# BAGIAN 3: FEATURE ENGINEERING & PEMBENTUKAN DATASET
-# =============================================================================
-
 def pearson_correlation_analysis(df_raw: pd.DataFrame):
-    """
-    Analisis korelasi Pearson antara pH, TDS, dan suhu.
-    Sesuai BAB III.4.3 & BAB II.5.3 - Optimasi Fitur Multivariat.
-    """
     print("\n[2/8] ANALISIS KORELASI PEARSON ...")
     corr_matrix = df_raw[CFG["feature_cols"]].corr(method='pearson')
     print("      Matriks Korelasi Pearson:")
@@ -299,44 +216,28 @@ def pearson_correlation_analysis(df_raw: pd.DataFrame):
 
 
 def create_sliding_window(data: np.ndarray, timesteps: int):
-    """
-    Transformasi time series ke format supervised learning
-    menggunakan metode jendela geser (sliding window).
-    Sesuai BAB III.3 - persamaan X_t dan Y_t.
-
-    Input  : data shape (N, n_features)
-    Output : X shape (N-timesteps, timesteps, n_features)
-             y shape (N-timesteps,)  ← hanya kolom pH (indeks 0)
-    """
     X, y = [], []
-    ph_idx = CFG["feature_cols"].index(CFG["target_col"])   # indeks kolom pH
+    ph_idx = CFG["feature_cols"].index(CFG["target_col"])
     for i in range(timesteps, len(data)):
-        X.append(data[i - timesteps: i, :])       # semua fitur dalam window
-        y.append(data[i, ph_idx])                 # target = pH berikutnya
+        X.append(data[i - timesteps: i, :])
+        y.append(data[i, ph_idx])
     return np.array(X), np.array(y)
 
 
 def split_dataset(df_scaled: pd.DataFrame):
-    """
-    Pembagian dataset: Train 80% | Test 20% (sequential, tidak diacak).
-    Sesuai BAB IV.3.2.4.
-    Mengembalikan (X_train, X_val, X_test, y_train, y_val, y_test).
-    """
     print("\n[3/8] PEMBAGIAN DATASET ...")
     data = df_scaled[CFG["feature_cols"]].values
 
-    # Split sekuensial
     n         = len(data)
     n_test    = int(n * CFG["test_size"])
     n_train   = n - n_test
 
     train_raw = data[:n_train]
-    test_raw  = data[n_train - CFG["timesteps"]:]   # include overlap untuk window
+    test_raw  = data[n_train - CFG["timesteps"]:]
 
     X_train_full, y_train_full = create_sliding_window(train_raw, CFG["timesteps"])
     X_test,       y_test       = create_sliding_window(test_raw,  CFG["timesteps"])
 
-    # Pisahkan validation dari training
     n_val    = int(len(X_train_full) * CFG["val_size"])
     X_val    = X_train_full[-n_val:]
     y_val    = y_train_full[-n_val:]
@@ -350,16 +251,8 @@ def split_dataset(df_scaled: pd.DataFrame):
     return X_train, X_val, X_test, y_train, y_val, y_test
 
 
-# =============================================================================
-# BAGIAN 4: ARSITEKTUR MODEL  (BAB IV.3.3)
-# =============================================================================
-
 def build_lstm_model(units_1=64, units_2=32, dense_units=16,
                      dropout=0.2, lr=0.001) -> Model:
-    """
-    Model LSTM Baseline.
-    Sesuai Tabel BAB IV.3.3.1
-    """
     inp  = Input(shape=(CFG["timesteps"], CFG["n_features"]), name="input")
     x    = LSTM(units_1, return_sequences=True,
                 activation='tanh', name="lstm_1")(inp)
@@ -378,10 +271,6 @@ def build_lstm_model(units_1=64, units_2=32, dense_units=16,
 
 def build_gru_model(units_1=64, units_2=32, dense_units=16,
                     dropout=0.2, lr=0.001) -> Model:
-    """
-    Model GRU Baseline.
-    Sesuai Tabel BAB IV.3.3.2
-    """
     inp  = Input(shape=(CFG["timesteps"], CFG["n_features"]), name="input")
     x    = GRU(units_1, return_sequences=True,
                activation='tanh', name="gru_1")(inp)
@@ -400,18 +289,10 @@ def build_gru_model(units_1=64, units_2=32, dense_units=16,
 
 def build_hybrid_lstm_gru_model(units_1=64, units_2=32, dense_units=16,
                                 dropout=0.2, lr=0.001) -> Model:
-    """
-    Model Hybrid LSTM-GRU (MODEL USULAN).
-    Layer 1 : LSTM – menangkap dependensi jangka panjang
-    Layer 2 : GRU  – efisiensi komputasi pola jangka pendek
-    Sesuai Tabel BAB IV.3.3.3 & BAB III.5.4 (Arsitektur Sekuensial).
-    """
     inp  = Input(shape=(CFG["timesteps"], CFG["n_features"]), name="input")
-    # LSTM Layer: return_sequences=True → meneruskan seluruh sekuens ke GRU
     x    = LSTM(units_1, return_sequences=True,
                 activation='tanh', name="lstm_1")(inp)
     x    = Dropout(dropout, name="dropout_1")(x)
-    # GRU Layer: return_sequences=False → hanya output terakhir
     x    = GRU(units_2, return_sequences=False,
                activation='tanh', name="gru_2")(x)
     x    = Dropout(dropout, name="dropout_2")(x)
@@ -425,7 +306,6 @@ def build_hybrid_lstm_gru_model(units_1=64, units_2=32, dense_units=16,
 
 
 def get_callbacks(model_name: str, fold_id: str = "") -> list:
-    """Callbacks standar untuk semua model."""
     suffix = f"_{fold_id}" if fold_id else ""
     return [
         EarlyStopping(monitor='val_loss', patience=CFG["patience"],
@@ -439,15 +319,8 @@ def get_callbacks(model_name: str, fold_id: str = "") -> list:
     ]
 
 
-# =============================================================================
-# BAGIAN 5: TRAINING & HYPERPARAMETER TUNING  (BAB IV.3.4)
-# =============================================================================
-
 def train_model(model, model_name, X_train, y_train, X_val, y_val,
                 epochs=100, batch_size=64, fold_id=""):
-    """
-    Melatih satu model dan mengembalikan (model, history).
-    """
     print(f"      Training {model_name} | epochs={epochs} | "
           f"batch={batch_size} ...", end=" ", flush=True)
     t0 = datetime.now()
@@ -458,7 +331,7 @@ def train_model(model, model_name, X_train, y_train, X_val, y_val,
         batch_size=batch_size,
         callbacks=get_callbacks(model_name, fold_id),
         verbose=0,
-        shuffle=False,     # time series — jangan diacak
+        shuffle=False,
     )
     elapsed = (datetime.now() - t0).total_seconds()
     best_ep = np.argmin(history.history['val_loss']) + 1
@@ -469,13 +342,6 @@ def train_model(model, model_name, X_train, y_train, X_val, y_val,
 
 
 def hyperparameter_tuning(X_train, y_train, X_val, y_val):
-    """
-    Hyperparameter tuning sesuai BAB IV.3.4 - Model LSTM-GRU:
-      - Variasi epoch      : [50, 75, 100, 150]
-      - Variasi LR         : [0.0005, 0.001, 0.002]
-      - Variasi hidden units: [(32,16), (64,32), (128,64)]
-    Mengembalikan konfigurasi terbaik berdasarkan val_loss terendah.
-    """
     print("\n[4/8] HYPERPARAMETER TUNING (Hybrid LSTM-GRU) ...")
     print("      Skenario yang diuji:")
     print(f"        Epochs      : {CFG['epoch_variants']}")
@@ -518,9 +384,8 @@ def hyperparameter_tuning(X_train, y_train, X_val, y_val):
                     "model"       : m,
                     "history"     : hist,
                 })
-                tf.keras.backend.clear_session()    # bebaskan memori GPU/CPU
+                tf.keras.backend.clear_session()
 
-    # Pilih berdasarkan val_loss minimum
     df_res = pd.DataFrame([
         {k: v for k, v in r.items() if k not in ["model", "history"]}
         for r in results
@@ -540,14 +405,7 @@ def hyperparameter_tuning(X_train, y_train, X_val, y_val):
     return best_cfg, df_res
 
 
-# =============================================================================
-# BAGIAN 6: EVALUASI & METRIK  (BAB III.6 & BAB IV.3.5)
-# =============================================================================
-
 def inverse_transform_predictions(y_pred_scaled, y_true_scaled, scalers):
-    """
-    Mengubah prediksi yang ternormalisasi kembali ke skala pH asli.
-    """
     sc = scalers[CFG["target_col"]]
     y_pred = sc.inverse_transform(y_pred_scaled.reshape(-1, 1)).flatten()
     y_true = sc.inverse_transform(y_true_scaled.reshape(-1, 1)).flatten()
@@ -556,9 +414,6 @@ def inverse_transform_predictions(y_pred_scaled, y_true_scaled, scalers):
 
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray,
                     model_name: str = "") -> dict:
-    """
-    Menghitung RMSE, MAE, R² sesuai BAB III.6 & BAB IV.3.5.
-    """
     rmse = np.sqrt(mean_squared_error(y_true, y_pred))
     mae  = mean_absolute_error(y_true, y_pred)
     r2   = r2_score(y_true, y_pred)
@@ -572,9 +427,6 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray,
 
 
 def evaluate_all_models(models_dict: dict, X_test, y_test, scalers) -> pd.DataFrame:
-    """
-    Evaluasi semua model secara serentak dan kembalikan tabel perbandingan.
-    """
     print("\n[6/8] EVALUASI KOMPARATIF MODEL ...")
     print(f"      {'Model':30s} | {'RMSE':>10} | {'MAE':>10} | {'R²':>8}")
     print("      " + "-" * 68)
@@ -595,12 +447,7 @@ def evaluate_all_models(models_dict: dict, X_test, y_test, scalers) -> pd.DataFr
     return df_metrics, all_preds
 
 
-# =============================================================================
-# BAGIAN 7: VISUALISASI
-# =============================================================================
-
 def plot_time_series_overview(df_raw: pd.DataFrame, stats: pd.DataFrame):
-    """Gambar 1: Overview time series mentah (EDA)."""
     fig, axes = plt.subplots(3, 1, figsize=(14, 9), sharex=True)
     colors = ['#2196F3', '#4CAF50', '#FF9800']
     labels = ['pH Air', 'TDS (ppm)', 'Suhu Air (°C)']
@@ -625,7 +472,6 @@ def plot_time_series_overview(df_raw: pd.DataFrame, stats: pd.DataFrame):
 
 
 def plot_correlation_heatmap(corr_matrix: pd.DataFrame):
-    """Gambar 2: Heatmap korelasi Pearson."""
     fig, ax = plt.subplots(figsize=(7, 5))
     mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=1)
     sns.heatmap(corr_matrix, annot=True, fmt=".4f", cmap='coolwarm',
@@ -638,7 +484,6 @@ def plot_correlation_heatmap(corr_matrix: pd.DataFrame):
 
 
 def plot_distribution(df_raw: pd.DataFrame):
-    """Gambar 3: Distribusi masing-masing fitur."""
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
     colors = ['#2196F3', '#4CAF50', '#FF9800']
     labels = ['pH Air', 'TDS (ppm)', 'Suhu Air (°C)']
@@ -663,7 +508,6 @@ def plot_distribution(df_raw: pd.DataFrame):
 
 
 def plot_training_history(histories: dict):
-    """Gambar 4: Kurva Training & Validation Loss ketiga model."""
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
     colors = {'train': '#2196F3', 'val': '#F44336'}
 
@@ -688,7 +532,6 @@ def plot_training_history(histories: dict):
 
 
 def plot_prediction_comparison(all_preds: dict, n_samples: int = 500):
-    """Gambar 5: Perbandingan prediksi vs aktual untuk tiga model."""
     fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
     colors = ['#2196F3', '#4CAF50', '#9C27B0']
 
@@ -716,7 +559,6 @@ def plot_prediction_comparison(all_preds: dict, n_samples: int = 500):
 
 
 def plot_scatter_actual_vs_pred(all_preds: dict):
-    """Gambar 6: Scatter plot aktual vs prediksi (ideal = diagonal)."""
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     colors = ['#2196F3', '#4CAF50', '#9C27B0']
 
@@ -726,7 +568,6 @@ def plot_scatter_actual_vs_pred(all_preds: dict):
         ax.scatter(y_true, y_pred, alpha=0.15, s=5,
                    color=color, rasterized=True)
 
-        # Garis ideal y = x
         lim = [min(y_true.min(), y_pred.min()) - 0.1,
                max(y_true.max(), y_pred.max()) + 0.1]
         ax.plot(lim, lim, 'r--', linewidth=1.5, label='Ideal (y = ŷ)')
@@ -745,7 +586,6 @@ def plot_scatter_actual_vs_pred(all_preds: dict):
 
 
 def plot_metrics_comparison(df_metrics: pd.DataFrame):
-    """Gambar 7: Bar chart perbandingan metrik ketiga model."""
     metrics_to_plot = ['RMSE', 'MAE', 'R2']
     colors_bar = ['#F44336', '#FF9800', '#4CAF50']
 
@@ -760,14 +600,12 @@ def plot_metrics_comparison(df_metrics: pd.DataFrame):
         ax.grid(axis='y', alpha=0.4, zorder=0)
         ax.tick_params(axis='x', rotation=10, labelsize=8)
 
-        # Annotasi nilai di atas bar
         for bar, val in zip(bars, vals):
             ax.text(bar.get_x() + bar.get_width() / 2.,
                     bar.get_height() + max(vals) * 0.02,
                     f'{val:.4f}', ha='center', va='bottom',
                     fontsize=8, fontweight='bold')
 
-        # Tandai model terbaik
         best_idx = (vals.idxmin() if metric != 'R2'
                     else vals.idxmax())
         best_pos = models.index(best_idx)
@@ -782,7 +620,6 @@ def plot_metrics_comparison(df_metrics: pd.DataFrame):
 
 
 def plot_error_distribution(all_preds: dict):
-    """Gambar 8: Distribusi error residual."""
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     colors = ['#2196F3', '#4CAF50', '#9C27B0']
 
@@ -805,8 +642,6 @@ def plot_error_distribution(all_preds: dict):
 
 
 def plot_tuning_heatmap(df_tuning: pd.DataFrame):
-    """Gambar 9: Heatmap hasil hyperparameter tuning."""
-    # Pivot per LR dan units kombinasi (avg across epochs)
     df_tuning["units"] = (df_tuning["units_1"].astype(str) + "x"
                           + df_tuning["units_2"].astype(str))
     pivot = df_tuning.groupby(["lr", "units"])["val_loss"].min().unstack()
@@ -824,16 +659,11 @@ def plot_tuning_heatmap(df_tuning: pd.DataFrame):
 
 
 def _save_fig(fig, name: str):
-    """Helper menyimpan gambar."""
     path = PLOT_DIR / f"{name}.png"
     fig.savefig(path, dpi=CFG["fig_dpi"], bbox_inches='tight')
     plt.close(fig)
     print(f"      Gambar tersimpan  : plots/{name}.png")
 
-
-# =============================================================================
-# BAGIAN 8: MAIN PIPELINE
-# =============================================================================
 
 def main():
     start_time = datetime.now()
@@ -842,14 +672,8 @@ def main():
     print(f"  Waktu mulai: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 65)
 
-    # ------------------------------------------------------------------
-    # STEP 1-2: Preprocessing & EDA
-    # ------------------------------------------------------------------
     df_raw, df_scaled, scalers, stats = full_preprocessing(DATA_PATH)
 
-    # ------------------------------------------------------------------
-    # STEP 2: Korelasi Pearson & Visualisasi EDA
-    # ------------------------------------------------------------------
     corr_matrix = pearson_correlation_analysis(df_raw)
 
     print("\n[2/8] MEMBUAT VISUALISASI EDA ...")
@@ -857,23 +681,14 @@ def main():
     plot_correlation_heatmap(corr_matrix)
     plot_distribution(df_raw)
 
-    # ------------------------------------------------------------------
-    # STEP 3: Pembentukan Dataset
-    # ------------------------------------------------------------------
     (X_train, X_val, X_test,
      y_train, y_val, y_test) = split_dataset(df_scaled)
 
-    # ------------------------------------------------------------------
-    # STEP 4: Hyperparameter Tuning (Hybrid LSTM-GRU)
-    # ------------------------------------------------------------------
     best_cfg, df_tuning = hyperparameter_tuning(
         X_train, y_train, X_val, y_val
     )
     plot_tuning_heatmap(df_tuning)
 
-    # ------------------------------------------------------------------
-    # STEP 5: Training Model Final (konfigurasi terbaik)
-    # ------------------------------------------------------------------
     print("\n[5/8] TRAINING MODEL FINAL ...")
     best_ep = best_cfg["epochs"]
     best_lr = best_cfg["lr"]
@@ -898,13 +713,11 @@ def main():
         epochs=best_ep, batch_size=CFG["batch_size"]
     )
 
-    # Simpan model final
     model_lstm.save(MODEL_DIR / "final_LSTM.keras")
     model_gru.save(MODEL_DIR  / "final_GRU.keras")
     model_hybrid.save(MODEL_DIR / "final_HybridLSTMGRU.keras")
     print("      Model final tersimpan di outputs/models/")
 
-    # Ringkasan arsitektur
     print("\n      Ringkasan Arsitektur:")
     for name, model in [("LSTM", model_lstm),
                         ("GRU", model_gru),
@@ -912,7 +725,6 @@ def main():
         print(f"\n      -- {name} --")
         model.summary(print_fn=lambda x: print(f"         {x}"))
 
-    # Plot learning curves
     histories = {
         "LSTM"           : hist_lstm,
         "GRU"            : hist_gru,
@@ -920,9 +732,6 @@ def main():
     }
     plot_training_history(histories)
 
-    # ------------------------------------------------------------------
-    # STEP 6: Evaluasi Komparatif
-    # ------------------------------------------------------------------
     models_dict = {
         "LSTM"           : model_lstm,
         "GRU"            : model_gru,
@@ -932,18 +741,12 @@ def main():
         models_dict, X_test, y_test, scalers
     )
 
-    # ------------------------------------------------------------------
-    # STEP 7: Visualisasi Hasil
-    # ------------------------------------------------------------------
     print("\n[7/8] MEMBUAT VISUALISASI HASIL ...")
     plot_prediction_comparison(all_preds)
     plot_scatter_actual_vs_pred(all_preds)
     plot_metrics_comparison(df_metrics)
     plot_error_distribution(all_preds)
 
-    # ------------------------------------------------------------------
-    # STEP 8: Laporan Akhir
-    # ------------------------------------------------------------------
     elapsed = (datetime.now() - start_time).total_seconds()
     print("\n" + "=" * 65)
     print("  RINGKASAN HASIL AKHIR")
@@ -967,10 +770,6 @@ def main():
 
     return df_metrics, all_preds, histories
 
-
-# =============================================================================
-# ENTRY POINT
-# =============================================================================
 
 if __name__ == "__main__":
     df_metrics, all_preds, histories = main()
